@@ -1,6 +1,5 @@
 import io
-import asyncio
-import av
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import json
@@ -10,15 +9,17 @@ from typing import List
 from requests.auth import HTTPDigestAuth
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
-
+import time
 from starlette.responses import StreamingResponse
 
-from RabbitMQProducer import RabbitMQProducer
+from camera_manager import CameraManager
 
 load_dotenv()
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
 CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD")
 app = FastAPI()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Pydantic model for camera connection
 class CameraConnection(BaseModel):
@@ -133,8 +134,20 @@ async def capture_image(camera_ip: str):
 
 
 if __name__ == "__main__":
+
+    manager = CameraManager()
+    try:
+        manager.start()
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received. Shutting down...")
+        manager.stop()
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}")
+        manager.stop()
+    finally:
+        logger.info("Application shutdown complete.")
     import uvicorn
 
-    producer = RabbitMQProducer(host='localhost', queues=['queue1', 'queue2', 'queue3'])
-    producer.publish_message({'key': 'value'}, queue='queue1')
     uvicorn.run(app, host="0.0.0.0", port=8000)
