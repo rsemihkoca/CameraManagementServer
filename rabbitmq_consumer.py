@@ -8,6 +8,8 @@ from config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_USERNAME, RABBITMQ_PA
 
 logger = logging.getLogger(__name__)
 
+import sys
+
 class RabbitMQConsumer:
     def __init__(self, shared_queue: queue.Queue):
         self.shared_queue = shared_queue
@@ -15,6 +17,11 @@ class RabbitMQConsumer:
         self.channel = None
         self.running = False
         self.consumer_thread = None
+        try:
+            self._connect()
+        except ConnectionError as e:
+            logger.error(f"Failed to connect to RabbitMQ: {e}")
+            sys.exit(1)
 
     def _connect(self):
         try:
@@ -28,7 +35,6 @@ class RabbitMQConsumer:
             else:
                 self.channel.queue_declare(queue=RABBITMQ_QUEUE, durable=True)
                 logger.info(f"Connected to RabbitMQ and declared queue '{RABBITMQ_QUEUE}'")
-
         except Exception as e:
             logger.error(f"Failed to connect to RabbitMQ server: {e}")
             raise ConnectionError(f"Failed to connect to RabbitMQ server: {e}")

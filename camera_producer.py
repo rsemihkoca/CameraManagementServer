@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 import logging
@@ -14,9 +15,14 @@ class CameraProducer:
     def __init__(self, shared_queue: queue.Queue):
         self.shared_queue = shared_queue
         self.db = self._load_db()
+        if not self.db:
+            logger.error("Failed to load camera database. Exiting.")
+            sys.exit(1)
         self.running = False
         self.capture_thread = None
-        self._verify_camera_connections()
+        if not self._verify_camera_connections():
+            logger.error("Failed to verify camera connections. Exiting.")
+            sys.exit(1)
 
     def _load_db(self) -> List[Dict]:
         try:
@@ -28,12 +34,15 @@ class CameraProducer:
             return []
 
     def _verify_camera_connections(self):
+        all_connected = True
         for camera in self.db:
             if self._test_connection(camera['ip']):
                 logging.info(f"Camera at {camera['ip']} is reachable and authenticated.")
             else:
                 logging.warning(f"Camera at {camera['ip']} is not reachable or authentication failed.")
+                all_connected = False
         logger.info("Camera connections verified.")
+        return all_connected
 
     def _test_connection(self, camera_ip: str) -> bool:
         url = f"http://{camera_ip}/ISAPI/System/deviceInfo"
