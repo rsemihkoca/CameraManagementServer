@@ -82,6 +82,7 @@ class CameraProducer:
             for camera in self.db:
                 if self._test_connection(camera['ip']):
                     self._process_camera(camera)
+            logger.info("Waiting for next capture interval...")
             time.sleep(CAPTURE_INTERVAL)
 
     def start(self):

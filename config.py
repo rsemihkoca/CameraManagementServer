@@ -7,7 +7,7 @@ load_dotenv()
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
 CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD")
 DB_FILE = "camera_connections.json"
-CAPTURE_INTERVAL = 300  # 5 minutes in seconds
+CAPTURE_INTERVAL = 10 # in seconds
 
 # Queue settings
 QUEUE_SIZE = 100

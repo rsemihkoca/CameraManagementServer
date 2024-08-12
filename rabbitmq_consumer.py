@@ -4,6 +4,7 @@ import json
 import time
 import threading
 import pika
+import base64
 from config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_USERNAME, RABBITMQ_PASSWORD
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,19 @@ class RabbitMQConsumer:
 
     def _publish_message(self, message):
         try:
+            # Encode the binary image data to base64
+            encoded_data = base64.b64encode(message['data']).decode('utf-8')
+
+            # Create a new message dictionary with the encoded data
+            json_message = {
+                'ip': message['ip'],
+                'data': encoded_data
+            }
+
             self.channel.basic_publish(
                 exchange='',
                 routing_key=RABBITMQ_QUEUE,
-                body=json.dumps(message),
+                body=json.dumps(json_message),
                 properties=pika.BasicProperties(delivery_mode=2)
             )
             logger.info(f"Sent message to '{RABBITMQ_QUEUE}': {message['ip']}")
