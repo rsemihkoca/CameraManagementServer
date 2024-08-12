@@ -1,5 +1,6 @@
 import io
-
+import asyncio
+import av
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import json
@@ -11,6 +12,8 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 
 from starlette.responses import StreamingResponse
+
+from RabbitMQProducer import RabbitMQProducer
 
 load_dotenv()
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
@@ -126,36 +129,12 @@ async def capture_image(camera_ip: str):
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
 
-@app.get("/stream/{camera_ip}")
-async def stream_video(camera_ip: str):
-    db = load_db()
-    camera = next((c for c in db if c["ip"] == camera_ip), None)
 
-    if not camera:
-        raise HTTPException(status_code=404, detail="Camera not found in the database")
-
-    # Test connection
-    try:
-        test_connection(CameraConnection(ip=camera_ip))
-    except HTTPException as e:
-        raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e.detail)}")
-
-    # Stream video
-    url = f"http://{camera_ip}/ISAPI/Streaming/channels/1/httpPreview"
-    auth = HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD)
-
-    def stream():
-        try:
-            with requests.get(url, auth=auth, stream=True, timeout=10) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=8192):
-                    yield chunk
-        except requests.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Failed to stream video: {str(e)}")
-
-    return StreamingResponse(stream(), media_type="video/mp4")
 
 
 if __name__ == "__main__":
     import uvicorn
+
+    producer = RabbitMQProducer(host='localhost', queues=['queue1', 'queue2', 'queue3'])
+    producer.publish_message({'key': 'value'}, queue='queue1')
     uvicorn.run(app, host="0.0.0.0", port=8000)

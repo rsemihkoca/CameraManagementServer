@@ -202,6 +202,64 @@ async def move_camera(direction: str):
     else:
         raise HTTPException(status_code=400, detail="Cannot move camera")
 
+
+# @app.get("/stream/{camera_ip}")
+# async def stream_video(camera_ip: str):
+#     db = load_db()
+#     camera = next((c for c in db if c["ip"] == camera_ip), None)
+#
+#     if not camera:
+#         raise HTTPException(status_code=404, detail="Camera not found in the database")
+#
+#     # Test connection
+#     try:
+#         test_connection(CameraConnection(ip=camera_ip))
+#     except HTTPException as e:
+#         raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e.detail)}")
+#
+#     # RTSP URL for Hikvision cameras
+#     rtsp_url = f"rtsp://{CAMERA_USERNAME}:{CAMERA_PASSWORD}@{camera_ip}:554/Streaming/Channels/101"
+#
+#     async def generate():
+#         container = av.open(rtsp_url, options={'rtsp_transport': 'tcp'})
+#         for frame in container.decode(video=0):
+#             yield (b'--frame\r\n'
+#                    b'Content-Type: image/jpeg\r\n\r\n' + frame.to_image().tobytes() + b'\r\n')
+#             await asyncio.sleep(0.1)  # Adjust this value to control frame rate
+#
+#     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+# @app.get("/stream/{camera_ip}")
+# async def stream_video(camera_ip: str):
+#     db = load_db()
+#     camera = next((c for c in db if c["ip"] == camera_ip), None)
+#
+#     if not camera:
+#         raise HTTPException(status_code=404, detail="Camera not found in the database")
+#
+#     # Test connection
+#     try:
+#         test_connection(CameraConnection(ip=camera_ip))
+#     except HTTPException as e:
+#         raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e.detail)}")
+#
+#     # Stream video
+#     url = f"http://{camera_ip}/ISAPI/Streaming/channels/1/httpPreview"
+#     auth = HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD)
+#
+#     def stream():
+#         try:
+#             with requests.get(url, auth=auth, stream=True, timeout=10) as r:
+#                 r.raise_for_status()
+#                 for chunk in r.iter_content(chunk_size=8192):
+#                     yield chunk
+#         except requests.RequestException as e:
+#             raise HTTPException(status_code=500, detail=f"Failed to stream video: {str(e)}")
+#
+#     return StreamingResponse(stream(), media_type="video/mp4")
+
+
 if __name__ == "__main__":
     import uvicorn
     # Customize port
