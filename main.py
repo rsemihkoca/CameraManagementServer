@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import time
 from starlette.responses import StreamingResponse
-
+from config import DB_FILE
 from camera_manager import CameraManager
 
 load_dotenv()
@@ -34,12 +34,11 @@ class DeviceInfo(BaseModel):
     firmwareVersion: str
 
 # JSON file to store camera connections
-DB_FILE = "camera_connections.json"
 
 # Helper functions
 def load_db():
     try:
-        with open(DB_FILE, "r") as f:
+        with open(DB_FILE, "rb") as f:
             return json.load(f)
     except FileNotFoundError:
         return []
@@ -135,11 +134,18 @@ async def capture_image(camera_ip: str):
 
 if __name__ == "__main__":
 
+    #check camera_connections file exists if not create it
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w") as f:
+            json.dump({}, f)
     manager = CameraManager()
     try:
-        manager.start()
-        while True:
-            time.sleep(1)
+        if not manager.producer.db:
+            logger.error("No camera connections found. Exiting.")
+        else:
+            manager.start()
+            while True:
+                time.sleep(1)
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down...")
         manager.stop()
@@ -147,7 +153,7 @@ if __name__ == "__main__":
         logger.error(f"An unexpected error occurred: {e}")
         manager.stop()
     finally:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
         logger.info("Application shutdown complete.")
-    import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -16,21 +16,31 @@ class CameraProducer:
         self.shared_queue = shared_queue
         self.db = self._load_db()
         if not self.db:
-            logger.error("Failed to load camera database. Exiting.")
-            sys.exit(1)
+            # logger.error("Failed to load camera database. Exiting.")
+            # sys.exit(1)
+            logger.info("Failed to load camera database. Continuing without cameras.")
         self.running = False
         self.capture_thread = None
         if not self._verify_camera_connections():
             logger.error("Failed to verify camera connections. Exiting.")
             sys.exit(1)
 
-    def _load_db(self) -> List[Dict]:
+    def _load_db(self):
         try:
-            with open(DB_FILE, "r") as f:
-                logger.info("Camera database loaded successfully.")
-                return json.load(f)
+            with open(DB_FILE, encoding='utf-8', mode='r') as f:
+                content = f.read()
+                logger.debug(f"DB file contents: {content}")
+                data = json.loads(content)
+            logger.info("Camera database loaded successfully.")
+            return data
         except FileNotFoundError:
             logger.error("Camera database file not found.")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON in camera database: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error loading camera database: {e}")
             return []
 
     def _verify_camera_connections(self):
@@ -41,7 +51,7 @@ class CameraProducer:
             else:
                 logging.warning(f"Camera at {camera['ip']} is not reachable or authentication failed.")
                 all_connected = False
-        logger.info("Camera connections verified.")
+        logger.info("Camera connection verification complete.")
         return all_connected
 
     def _test_connection(self, camera_ip: str) -> bool:

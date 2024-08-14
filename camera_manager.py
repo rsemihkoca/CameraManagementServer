@@ -8,14 +8,20 @@ logger = logging.getLogger(__name__)
 
 import sys
 
+
 class CameraManager:
     def __init__(self):
         self.shared_queue = queue.Queue(maxsize=QUEUE_SIZE)
         try:
             self.producer = CameraProducer(self.shared_queue)
-            self.consumer = RabbitMQConsumer(self.shared_queue)
         except Exception as e:
             logger.error(f"Failed to initialize CameraManager: {e}")
+            sys.exit(1)
+        try:
+            self.consumer = RabbitMQConsumer(self.shared_queue)
+        except Exception as e:
+            logger.error(f"Failed to initialize RabbitMQConsumer: {e}")
+            self.producer.stop()
             sys.exit(1)
 
     def start(self):

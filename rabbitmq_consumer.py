@@ -26,31 +26,48 @@ class RabbitMQConsumer:
 
     def _connect(self):
         try:
+            if self.connection and self.connection.is_open:
+                self.connection.close()
+
             credentials = pika.PlainCredentials(RABBITMQ_USERNAME, RABBITMQ_PASSWORD)
             parameters = pika.ConnectionParameters(RABBITMQ_HOST, credentials=credentials)
             self.connection = pika.BlockingConnection(parameters)
             self.channel = self.connection.channel()
-            # check if the queue exists, if not create it
-            if self.channel.queue_declare(queue=RABBITMQ_QUEUE, passive=True):
+
+            if self._check_queue_exists():
                 logger.info(f"Connected to RabbitMQ and found queue '{RABBITMQ_QUEUE}'")
             else:
                 self.channel.queue_declare(queue=RABBITMQ_QUEUE, durable=True)
                 logger.info(f"Connected to RabbitMQ and declared queue '{RABBITMQ_QUEUE}'")
+
+            return True
         except Exception as e:
             logger.error(f"Failed to connect to RabbitMQ server: {e}")
-            raise ConnectionError(f"Failed to connect to RabbitMQ server: {e}")
+            return False
+
+    def _check_queue_exists(self) -> bool:
+        try:
+            self.channel.queue_declare(queue=RABBITMQ_QUEUE, passive=True)
+            return True
+        except pika.exceptions.ChannelClosedByBroker:
+            # Queue doesn't exist, we'll create it
+            return False
+        except Exception as e:
+            logger.error(f"Error checking queue existence: {e}")
+            return False
 
     def _disconnect(self):
-        if self.connection:
+        if self.connection and self.connection.is_open:
             self.connection.close()
             logger.info("Disconnected from RabbitMQ")
 
     def _publish_message(self, message):
         try:
-            # Encode the binary image data to base64
-            encoded_data = base64.b64encode(message['data']).decode('utf-8')
+            if not self.channel or self.channel.is_closed:
+                if not self._connect():
+                    raise ConnectionError("Failed to reconnect to RabbitMQ")
 
-            # Create a new message dictionary with the encoded data
+            encoded_data = base64.b64encode(message['data']).decode('utf-8')
             json_message = {
                 'ip': message['ip'],
                 'data': encoded_data
@@ -65,19 +82,31 @@ class RabbitMQConsumer:
             logger.info(f"Sent message to '{RABBITMQ_QUEUE}': {message['ip']}")
         except Exception as e:
             logger.error(f"Failed to publish message: {e}")
+            raise
 
     def _consume(self):
-        self._connect()
         while self.running:
             try:
-                message = self.shared_queue.get(timeout=1)
+                if not self.channel or self.channel.is_closed:
+                    if not self._connect():
+                        time.sleep(5)  # Wait before retrying connection
+                        continue
+
+                message = self.shared_queue.get(timeout=1, block=False)
                 self._publish_message(message)
+                self.shared_queue.task_done()
+                logger.info(f"Successfully processed and removed message from {message['ip']}")
             except queue.Empty:
                 continue
+            except pika.exceptions.AMQPConnectionError:
+                logger.error("AMQP Connection Error. Attempting to reconnect...")
+                self._connect()
             except Exception as e:
                 logger.error(f"Error in consumer: {e}")
-                time.sleep(5)  # Wait before reconnecting
-                self._connect()
+                if 'message' in locals():
+                    self.shared_queue.put(message)
+                    logger.info(f"Put message from {message['ip']} back in the queue due to error")
+                time.sleep(5)  # Wait before retrying
 
     def start(self):
         self.running = True
