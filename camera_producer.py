@@ -16,8 +16,6 @@ class CameraProducer:
         self.shared_queue = shared_queue
         self.db = self._load_db()
         if not self.db:
-            # logger.error("Failed to load camera database. Exiting.")
-            # sys.exit(1)
             logger.info("Failed to load camera database. Continuing without cameras.")
         self.running = False
         self.capture_thread = None
