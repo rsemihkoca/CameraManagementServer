@@ -105,6 +105,14 @@ async def startup_event():
             json.dump([], f)
     DatabaseManager.check_connections()
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    pass
+
+@app.get("/", response_model=GenericResponse)
+async def root():
+    return GenericResponse(success=True, data="Welcome to the IP Camera API")
+
 @app.post("/connections/{camera_ip}", response_model=GenericResponse)
 async def create_connection(camera_ip: str):
     db = DatabaseManager.load_db()
