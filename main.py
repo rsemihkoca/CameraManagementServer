@@ -1,27 +1,26 @@
 import io
 import logging
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import json
 import requests
 import os
+import base64
 from typing import List, Union
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from requests.auth import HTTPDigestAuth
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
-import time
 from starlette.responses import StreamingResponse, JSONResponse
 from config import DB_FILE
-from camera_manager import CameraManager
 
 load_dotenv()
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
 CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD")
+
 app = FastAPI()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Pydantic models
 class DeviceInfo(BaseModel):
     ip: str
     serialNumber: str
@@ -29,70 +28,107 @@ class DeviceInfo(BaseModel):
     model: str
     firmwareVersion: str
 
+class CaptureResponse(BaseModel):
+    ip: str
+    data: str
+
 class GenericResponse(BaseModel):
     success: bool
-    data: Union[DeviceInfo, List[DeviceInfo], None] = None
-    content: Union[str, None] = None
+    data: Union[DeviceInfo, List[DeviceInfo], List[CaptureResponse], str] = None
 
-# Helper functions
-def load_db():
-    try:
-        with open(DB_FILE, "rb") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
+class Camera:
+    def __init__(self, ip: str):
+        self.ip = ip
+        self.auth = HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD)
 
-def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f)
+    def test_connection(self) -> DeviceInfo:
+        url = f"http://{self.ip}/ISAPI/System/deviceInfo"
+        try:
+            response = requests.get(url, auth=self.auth, timeout=5)
+            response.raise_for_status()
+            device_info_xml = response.text
+            return self.parse_device_info_xml(device_info_xml)
+        except requests.RequestException as e:
+            raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e)}")
 
-def parse_device_info_xml(xml_string: str, ip: str) -> DeviceInfo:
-    ns = {"ns": "http://www.hikvision.com/ver20/XMLSchema"}
-    root = ET.fromstring(xml_string)
-    return DeviceInfo(
-        ip=ip,
-        serialNumber=root.find("ns:serialNumber", ns).text,
-        deviceName=root.find("ns:deviceName", ns).text,
-        model=root.find("ns:model", ns).text,
-        firmwareVersion=root.find("ns:firmwareVersion", ns).text
-    )
+    def parse_device_info_xml(self, xml_string: str) -> DeviceInfo:
+        ns = {"ns": "http://www.hikvision.com/ver20/XMLSchema"}
+        root = ET.fromstring(xml_string)
+        return DeviceInfo(
+            ip=self.ip,
+            serialNumber=root.find("ns:serialNumber", ns).text,
+            deviceName=root.find("ns:deviceName", ns).text,
+            model=root.find("ns:model", ns).text,
+            firmwareVersion=root.find("ns:firmwareVersion", ns).text
+        )
 
-def test_connection(camera_ip) -> DeviceInfo:
-    url = f"http://{camera_ip}/ISAPI/System/deviceInfo"
-    auth = HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD)
-    try:
-        response = requests.get(url, auth=auth, timeout=5)
-        response.raise_for_status()
-        device_info_xml = response.text
-        device_info = parse_device_info_xml(device_info_xml, camera_ip)
-        return device_info
-    except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e)}")
+    def capture_image(self) -> bytes:
+        url = f"http://{self.ip}/ISAPI/Streaming/channels/1/picture"
+        try:
+            response = requests.get(url, auth=self.auth, timeout=10)
+            response.raise_for_status()
+            return response.content
+        except requests.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
 
-# Endpoints
+class DatabaseManager:
+    @staticmethod
+    def load_db():
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def save_db(data):
+        with open(DB_FILE, "w") as f:
+            json.dump(data, f)
+
+    @staticmethod
+    def check_connections():
+        db = DatabaseManager.load_db()
+        valid_connections = []
+        for camera_data in db:
+            try:
+                camera = Camera(camera_data["ip"])
+                camera.test_connection()
+                valid_connections.append(camera_data)
+            except HTTPException:
+                logger.info(f"Removing invalid connection: {camera_data['ip']}")
+        DatabaseManager.save_db(valid_connections)
+
+@app.on_event("startup")
+async def startup_event():
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w") as f:
+            json.dump([], f)
+    DatabaseManager.check_connections()
+
 @app.post("/connections/{camera_ip}", response_model=GenericResponse)
 async def create_connection(camera_ip: str):
-    db = load_db()
+    db = DatabaseManager.load_db()
     if any(c["ip"] == camera_ip for c in db):
         raise HTTPException(status_code=400, detail="Connection with this IP already exists")
 
-    device_info = test_connection(camera_ip)
+    camera = Camera(camera_ip)
+    device_info = camera.test_connection()
 
     db.append(device_info.dict())
-    save_db(db)
+    DatabaseManager.save_db(db)
 
     return GenericResponse(success=True, data=device_info)
 
 @app.delete("/connections/{camera_ip}", response_model=GenericResponse)
 async def delete_connection(camera_ip: str):
-    db = load_db()
+    db = DatabaseManager.load_db()
     db = [c for c in db if c["ip"] != camera_ip]
-    save_db(db)
-    return GenericResponse(success=True, content="Connection deleted successfully")
+    DatabaseManager.save_db(db)
+    return GenericResponse(success=True, data="Connection deleted")
 
 @app.get("/connections", response_model=GenericResponse)
 async def list_connections():
-    db = load_db()
+    db = DatabaseManager.load_db()
     if not db:
         return GenericResponse(success=True, data=[])
     devices = [DeviceInfo(**item) for item in db]
@@ -100,53 +136,44 @@ async def list_connections():
 
 @app.post("/connections/{camera_ip}/test", response_model=GenericResponse)
 async def test_connection_endpoint(camera_ip: str):
-    device_info = test_connection(camera_ip)
+    camera = Camera(camera_ip)
+    device_info = camera.test_connection()
     return GenericResponse(success=True, data=device_info)
 
 @app.get("/capture/{camera_ip}", response_class=StreamingResponse)
 async def capture_image(camera_ip: str):
-    db = load_db()
-    camera = next((c for c in db if c["ip"] == camera_ip), None)
-
-    if not camera:
+    db = DatabaseManager.load_db()
+    if not any(c["ip"] == camera_ip for c in db):
         raise HTTPException(status_code=404, detail="Camera not found in the database")
 
+    camera = Camera(camera_ip)
     try:
-        test_connection(camera_ip)
-    except HTTPException as e:
-        raise HTTPException(status_code=400, detail=f"Connection test failed: {str(e.detail)}")
-
-    url = f"http://{camera_ip}/ISAPI/Streaming/channels/1/picture"
-    auth = HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD)
-
-    try:
-        response = requests.get(url, auth=auth, timeout=10)
-        response.raise_for_status()
-        image_data = response.content
-
+        image_data = camera.capture_image()
         return StreamingResponse(io.BytesIO(image_data), media_type="image/jpeg")
-    except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
+    except HTTPException as e:
+        raise e
+
+@app.get("/capture", response_model=GenericResponse)
+async def capture_images():
+    db = DatabaseManager.load_db()
+    if not db:
+        return GenericResponse(success=True, data=[])
+
+    captured_images = []
+    for camera_data in db:
+        camera_ip = camera_data["ip"]
+        camera = Camera(camera_ip)
+        try:
+            image_data = camera.capture_image()
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+            captured_images.append({"ip": camera_ip, "data": base64_image})
+        except HTTPException as e:
+            logger.error(f"Failed to capture image from {camera_ip}: {str(e)}")
+            # Optionally, you can decide to include failed captures in the response
+            # captured_images.append({"ip": camera_ip, "data": None, "error": str(e)})
+
+    return GenericResponse(success=True, data=captured_images)
 
 if __name__ == "__main__":
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump([], f)  # Ensure DB file is an empty list
-    manager = CameraManager()
-    try:
-        if not manager.producer.db:
-            logger.error("No camera connections found. Exiting.")
-        else:
-            manager.start()
-            while True:
-                time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received. Shutting down...")
-        manager.stop()
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        manager.stop()
-    finally:
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
-        logger.info("Application shutdown complete.")
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

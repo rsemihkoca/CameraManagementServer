@@ -1,6 +1,6 @@
 import logging
 import queue
-from camera_producer import CameraProducer
+from old.camera_producer import CameraProducer
 from rabbitmq_consumer import RabbitMQConsumer
 from config import QUEUE_SIZE
 
@@ -38,3 +38,22 @@ class CameraManager:
         logger.info("Stopping CameraManager...")
         self.producer.stop()
         self.consumer.stop()
+
+    # manager = CameraManager()
+    # try:
+    #     if not manager.producer.db:
+    #         logger.error("No camera connections found. Exiting.")
+    #     else:
+    #         manager.start()
+    #         while True:
+    #             time.sleep(1)
+    # except KeyboardInterrupt:
+    #     logger.info("Keyboard interrupt received. Shutting down...")
+    #     manager.stop()
+    # except Exception as e:
+    #     logger.error(f"An unexpected error occurred: {e}")
+    #     manager.stop()
+    # finally:
+    #     import uvicorn
+    #     uvicorn.run(app, host="0.0.0.0", port=8000)
+    #     logger.info("Application shutdown complete.")
