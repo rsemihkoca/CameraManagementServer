@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 from starlette.responses import StreamingResponse, JSONResponse
 from config import DB_FILE
+from enum import Enum
+
 
 load_dotenv()
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
@@ -21,12 +23,17 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+class CameraStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
 class DeviceInfo(BaseModel):
     ip: str
     serialNumber: str
     deviceName: str
     model: str
     firmwareVersion: str
+    status: CameraStatus = CameraStatus.ACTIVE
 
 class CaptureResponse(BaseModel):
     ip: str
@@ -88,15 +95,18 @@ class DatabaseManager:
     @staticmethod
     def check_connections():
         db = DatabaseManager.load_db()
-        valid_connections = []
+        connections = []
         for camera_data in db:
+            camera = Camera(camera_data["ip"])
+            # if test connection fails, update device status to inactive
             try:
-                camera = Camera(camera_data["ip"])
                 camera.test_connection()
-                valid_connections.append(camera_data)
             except HTTPException:
-                logger.info(f"Removing invalid connection: {camera_data['ip']}")
-        DatabaseManager.save_db(valid_connections)
+                camera_data["status"] = CameraStatus.INACTIVE
+            else:
+                camera_data["status"] = CameraStatus.ACTIVE
+            connections.append(camera_data)
+        DatabaseManager.save_db(connections)
 
 @app.on_event("startup")
 async def startup_event():
@@ -120,12 +130,16 @@ async def create_connection(camera_ip: str):
         raise HTTPException(status_code=400, detail="Connection with this IP already exists")
 
     camera = Camera(camera_ip)
-    device_info = camera.test_connection()
 
-    db.append(device_info.dict())
-    DatabaseManager.save_db(db)
-
-    return GenericResponse(success=True, data=device_info)
+    try:
+        device_info = camera.test_connection()
+    except HTTPException as e:
+        return GenericResponse(success=False, data=str(e.detail))
+    else:
+        device_info.status = CameraStatus.ACTIVE
+        db.append(device_info.model_dump())
+        DatabaseManager.save_db(db)
+        return GenericResponse(success=True, data=device_info)
 
 @app.delete("/connections/{camera_ip}", response_model=GenericResponse)
 async def delete_connection(camera_ip: str):
@@ -144,22 +158,52 @@ async def list_connections():
 
 @app.post("/connections/{camera_ip}/test", response_model=GenericResponse)
 async def test_connection_endpoint(camera_ip: str):
-    camera = Camera(camera_ip)
-    device_info = camera.test_connection()
-    return GenericResponse(success=True, data=device_info)
+
+    # check_camera_ip_exists_and_active(camera_ip)
+    #check_camera_ip_exists(camera_ip)
+
+    try:
+        device_info = check_camera_working(camera_ip)
+    except HTTPException as e:
+        return GenericResponse(success=False, data=str(e.detail))
+    else:
+        return GenericResponse(success=True, data=device_info)
+
+@app.get("/connections/test_all", response_model=GenericResponse)
+async def test_all_connections():
+    db = DatabaseManager.load_db()
+    if not db:
+        return GenericResponse(success=True, data="No connections available to test")
+
+    results = []
+    for camera_data in db:
+        camera_ip = camera_data["ip"]
+        try:
+            device_info = check_camera_working(camera_ip)
+        except:
+            pass
+        new_device_info = DeviceInfo(**device_info.model_dump())
+        new_device_info.status = CameraStatus.ACTIVE
+        results.append(new_device_info)
+
+    return GenericResponse(success=True, data=results)
 
 @app.get("/capture/{camera_ip}", response_class=StreamingResponse)
 async def capture_image(camera_ip: str):
-    db = DatabaseManager.load_db()
-    if not any(c["ip"] == camera_ip for c in db):
-        raise HTTPException(status_code=404, detail="Camera not found in the database")
+    check_camera_ip_exists_and_active(camera_ip)
 
-    camera = Camera(camera_ip)
     try:
-        image_data = camera.capture_image()
-        return StreamingResponse(io.BytesIO(image_data), media_type="image/jpeg")
+        device_info = check_camera_working(camera_ip)
     except HTTPException as e:
-        raise e
+        return GenericResponse(success=False, data=str(e.detail))
+    else:
+        try:
+            camera = Camera(camera_ip)
+            image_data = camera.capture_image()
+            return StreamingResponse(io.BytesIO(image_data), media_type="image/jpeg")
+        except HTTPException as e:
+            logger.error(f"Failed to capture image from {camera_ip}: {str(e)}")
+            return GenericResponse(success=False, data=str(e.detail))
 
 @app.get("/capture", response_model=GenericResponse)
 async def capture_images():
@@ -171,17 +215,63 @@ async def capture_images():
     for camera_data in db:
         camera_ip = camera_data["ip"]
         camera = Camera(camera_ip)
+
+        check_camera_ip_exists_and_active(camera_ip)
+
         try:
-            image_data = camera.capture_image()
-            base64_image = base64.b64encode(image_data).decode('utf-8')
-            captured_images.append({"ip": camera_ip, "data": base64_image})
+            device_info = check_camera_working(camera_ip)
         except HTTPException as e:
-            logger.error(f"Failed to capture image from {camera_ip}: {str(e)}")
-            # Optionally, you can decide to include failed captures in the response
-            # captured_images.append({"ip": camera_ip, "data": None, "error": str(e)})
+            return GenericResponse(success=False, data=str(e.detail))
+        else:
+            try:
+                image_data = camera.capture_image()
+                base64_image = base64.b64encode(image_data).decode('utf-8')
+                captured_images.append({"ip": camera_ip, "data": base64_image})
+            except HTTPException as e:
+                logger.error(f"Failed to capture image from {camera_ip}: {str(e)}")
+                captured_images.append({"ip": camera_ip, "data": None})
 
     return GenericResponse(success=True, data=captured_images)
 
+
+def check_camera_ip_exists(camera_ip: str):
+    db = DatabaseManager.load_db()
+    if not any(c["ip"] == camera_ip for c in db):
+        raise HTTPException(status_code=400, detail="Connection with this IP does not exist")
+
+def check_camera_ip_exists_and_active(camera_ip: str):
+    db = DatabaseManager.load_db()
+    if not any(c["ip"] == camera_ip for c in db):
+        raise HTTPException(status_code=400, detail="Connection with this IP does not exist")
+    for c in db:
+        if c["ip"] == camera_ip and c["status"] == CameraStatus.INACTIVE:
+            raise HTTPException(status_code=400, detail="Connection with this IP is inactive")
+
+def check_camera_working(camera_ip: str) -> DeviceInfo:
+    camera = Camera(camera_ip)
+
+    try:
+        device_info = camera.test_connection()
+    except HTTPException as e:
+        db = DatabaseManager.load_db()
+        camera_data = next((c for c in db if c["ip"] == camera_ip), None)
+        if camera_data:
+            camera_data["status"] = CameraStatus.INACTIVE
+            DatabaseManager.save_db(db)
+        raise HTTPException(status_code=400, detail=str(e.detail))
+    else:
+        # if test connection is successful, update device status to active
+        db = DatabaseManager.load_db()
+        camera_data = next((c for c in db if c["ip"] == camera_ip), None)
+        if camera_data:
+            camera_data["status"] = CameraStatus.ACTIVE
+            DatabaseManager.save_db(db)
+        return camera_data
+
 if __name__ == "__main__":
     import uvicorn
+    # if json db file does not exist, create it
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w") as f:
+            json.dump([], f)
     uvicorn.run(app, host="0.0.0.0", port=8000)
