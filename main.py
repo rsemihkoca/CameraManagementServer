@@ -179,12 +179,15 @@ async def test_all_connections():
     for camera_data in db:
         camera_ip = camera_data["ip"]
         try:
-            device_info = check_camera_working(camera_ip)
+            check_camera_working(camera_ip)
         except:
-            pass
-        new_device_info = DeviceInfo(**device_info.model_dump())
-        new_device_info.status = CameraStatus.ACTIVE
-        results.append(new_device_info)
+            new_device_info = DeviceInfo(**camera_data)
+            new_device_info.status = CameraStatus.INACTIVE
+            results.append(new_device_info)
+        else:
+            new_device_info = DeviceInfo(**camera_data)
+            new_device_info.status = CameraStatus.ACTIVE
+            results.append(new_device_info)
 
     return GenericResponse(success=True, data=results)
 
