@@ -51,7 +51,7 @@ class Camera:
     def test_connection(self) -> DeviceInfo:
         url = f"http://{self.ip}/ISAPI/System/deviceInfo"
         try:
-            response = requests.get(url, auth=self.auth, timeout=5)
+            response = requests.get(url, auth=self.auth, timeout=1)
             response.raise_for_status()
             device_info_xml = response.text
             return self.parse_device_info_xml(device_info_xml)
