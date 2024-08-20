@@ -269,7 +269,8 @@ def check_camera_working(camera_ip: str) -> DeviceInfo:
         if camera_data:
             camera_data["status"] = CameraStatus.ACTIVE
             DatabaseManager.save_db(db)
-        return camera_data
+            return camera_data
+        return device_info
 
 if __name__ == "__main__":
     import uvicorn
