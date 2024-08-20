@@ -2,15 +2,19 @@ services:
   api:
     build: .
     ports:
-      - "192.168.0.20:8000:8000"
+      - "8000:8000"
     environment:
       - IP_CAMERA_USERNAME=${IP_CAMERA_USERNAME}
       - IP_CAMERA_PASSWORD=${IP_CAMERA_PASSWORD}
     volumes:
       - ./camera_connections.json:/app/camera_connections.json
     restart: always
+    networks:
+      - camera-network
 
 volumes:
   camera_connections:
-  camera-network:
-    driver: bridge
+
+networks:
+    camera-network:
+        driver: bridge
