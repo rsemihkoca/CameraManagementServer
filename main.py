@@ -87,7 +87,7 @@ class Camera:
             '-b:v', '5M',  # Video bitrate (5 Mbps for high quality)
             '-maxrate', '5M',  # Maximum bitrate
             '-bufsize', '10M',  # Buffer size (2x maxrate for smoother quality)
-            '-g', '60',  # Keyframe interval (2 seconds at 30 fps)
+            '-g', '25',  # Keyframe interval (2 seconds at 30 fps)
             '-codec:a', 'aac',  # Audio codec (AAC for good quality)
             '-b:a', '192k',  # Audio bitrate
             '-ar', '48000',  # Audio sample rate
