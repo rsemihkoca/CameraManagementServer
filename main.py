@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from requests.auth import HTTPDigestAuth
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
+import subprocess
 from starlette.responses import StreamingResponse, JSONResponse
 from config import DB_FILE
 from enum import Enum
@@ -68,6 +69,47 @@ class Camera:
             model=root.find("ns:model", ns).text,
             firmwareVersion=root.find("ns:firmwareVersion", ns).text
         )
+
+    def stream_video(self):
+        # RTSP URL for the camera stream
+        # This format is common for many IP cameras, but might need adjustment for your specific model
+        url = f"rtsp://{CAMERA_USERNAME}:{CAMERA_PASSWORD}@{self.ip}/h264/ch1/main/av_stream"
+
+        # FFmpeg command to capture and transcode the video stream
+        command = [
+            'ffmpeg',
+            '-i', url,  # Input URL
+            '-f', 'mpegts',  # Output format (MPEG transport stream)
+            '-codec:v', 'libx264',  # Video codec (H.264 for high quality)
+            '-preset', 'ultrafast',  # Encoding preset (reduces CPU usage)
+            '-tune', 'zerolatency',  # Tuning for low-latency streaming
+            '-s', '1920x1080',  # Resolution (Full HD)
+            '-b:v', '5M',  # Video bitrate (5 Mbps for high quality)
+            '-maxrate', '5M',  # Maximum bitrate
+            '-bufsize', '10M',  # Buffer size (2x maxrate for smoother quality)
+            '-g', '60',  # Keyframe interval (2 seconds at 30 fps)
+            '-codec:a', 'aac',  # Audio codec (AAC for good quality)
+            '-b:a', '192k',  # Audio bitrate
+            '-ar', '48000',  # Audio sample rate
+            '-ac', '2',  # Number of audio channels (stereo)
+            '-muxdelay', '0.001',  # Reduces latency in muxing
+            '-'  # Output to stdout
+        ]
+
+        # Start the FFmpeg process
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        def generate():
+            """Generator function to yield video data"""
+            while True:
+                # Read 4K chunks of data from the FFmpeg process
+                data = process.stdout.read(4096)
+                if not data:
+                    break
+                yield data
+
+        return generate()
+
 
     def capture_image(self) -> bytes:
         url = f"http://{self.ip}/ISAPI/Streaming/channels/1/picture"
@@ -235,6 +277,42 @@ async def capture_images():
                 captured_images.append({"ip": camera_ip, "data": None})
 
     return GenericResponse(success=True, data=captured_images)
+
+
+@app.get("/stream/{camera_ip}")
+async def stream_video(camera_ip: str):
+    """
+    Endpoint to stream video from a specific camera
+    :param camera_ip: IP address of the camera
+    :return: StreamingResponse with the video stream
+    """
+    # Check if the camera exists and is active
+    check_camera_ip_exists_and_active(camera_ip)
+
+    try:
+        # Test the camera connection
+        device_info = check_camera_working(camera_ip)
+    except HTTPException as e:
+        # If the connection test fails, return an error response
+        return GenericResponse(success=False, data=str(e.detail))
+    else:
+        try:
+            # Create a Camera instance and start streaming
+            camera = Camera(camera_ip)
+            return StreamingResponse(
+                camera.stream_video(),
+                media_type="video/mp2t",
+                headers={
+                    'Content-Disposition': f'inline; filename="stream_{camera_ip}.ts"',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
+                }
+            )
+        except Exception as e:
+            # Log any errors that occur during streaming
+            logger.error(f"Failed to stream video from {camera_ip}: {str(e)}")
+            return GenericResponse(success=False, data=str(e))
 
 
 def check_camera_ip_exists(camera_ip: str):
