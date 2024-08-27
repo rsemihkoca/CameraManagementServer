@@ -14,15 +14,40 @@ import subprocess
 from starlette.responses import StreamingResponse, JSONResponse
 from config import DB_FILE
 from enum import Enum
+from colorama import init, Fore, Style
+from contextlib import asynccontextmanager
 
+import sys
 
 load_dotenv()
+CAMERA_API_VERSION = os.environ.get("CAMERA_API_VERSION")
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
 CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD")
 
-app = FastAPI()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w") as f:
+            json.dump([], f)
+        
+    # Prepare logger
+    logger = logging.getLogger("uvicorn.default")
+    logger.setLevel(logging.INFO)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    log_formatter = logging.Formatter( f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s")
+    stream_handler.setFormatter(log_formatter)
+    logger.addHandler(stream_handler)
+    
+    # Prepare Database
+    DatabaseManager.check_connections()
+    yield
+    # Shutdown
+
+
+app = FastAPI(lifespan=lifespan)
+
 
 class CameraStatus(str, Enum):
     ACTIVE = "active"
@@ -150,16 +175,7 @@ class DatabaseManager:
             connections.append(camera_data)
         DatabaseManager.save_db(connections)
 
-@app.on_event("startup")
-async def startup_event():
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump([], f)
-    DatabaseManager.check_connections()
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    pass
 
 @app.get("/", response_model=GenericResponse)
 async def root():
@@ -356,4 +372,9 @@ if __name__ == "__main__":
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
             json.dump([], f)
+
+    # log_config = uvicorn.config.LOGGING_CONFIG
+    
+    # log_config["formatters"]["access"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
+    # log_config["formatters"]["default"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
     uvicorn.run(app, host="0.0.0.0", port=8000)
