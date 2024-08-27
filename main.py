@@ -33,12 +33,16 @@ async def lifespan(app: FastAPI):
             json.dump([], f)
         
     # Prepare logger
-    logger = logging.getLogger("uvicorn.default")
+    uvicorn_logger = logging.getLogger("uvicorn")
+    uvicorn_logger.propagate = False
+    logger = logging.getLogger(__name__)
+
     logger.setLevel(logging.INFO)
     stream_handler = logging.StreamHandler(sys.stdout)
-    log_formatter = logging.Formatter( f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s")
+    log_formatter = logging.Formatter( f"%(levelname)s:     {Fore.RESET}%(message)s")
     stream_handler.setFormatter(log_formatter)
     logger.addHandler(stream_handler)
+    logger.info(f"API version: {CAMERA_API_VERSION}")
     
     # Prepare Database
     DatabaseManager.check_connections()
@@ -373,8 +377,11 @@ if __name__ == "__main__":
         with open(DB_FILE, "w") as f:
             json.dump([], f)
 
-    # log_config = uvicorn.config.LOGGING_CONFIG
+    log_config = uvicorn.config.LOGGING_CONFIG
     
-    # log_config["formatters"]["access"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
-    # log_config["formatters"]["default"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    log_config["formatters"]["access"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
+    #log_config["formatters"]["default"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
+    log_config["formatters"]["default"]["fmt"] = "%(levelname)s:     %(client_addr)s - %(message)s"
+    log_config["handlers"]["default"]["formatter"] = "default"
+    
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=log_config)
