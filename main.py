@@ -16,34 +16,23 @@ from config import DB_FILE
 from enum import Enum
 from colorama import init, Fore, Style
 from contextlib import asynccontextmanager
+from log_config import setup_logging, logging_config
 
 import sys
 
+setup_logging()
 load_dotenv()
 CAMERA_API_VERSION = os.environ.get("CAMERA_API_VERSION")
 CAMERA_USERNAME = os.environ.get("IP_CAMERA_USERNAME")
 CAMERA_PASSWORD = os.environ.get("IP_CAMERA_PASSWORD")
 
+logger = logging.getLogger("app")  # Replace with your logger name
+
+logger.info(f"API version: {CAMERA_API_VERSION}")
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump([], f)
-        
-    # Prepare logger
-    uvicorn_logger = logging.getLogger("uvicorn")
-    uvicorn_logger.propagate = False
-    logger = logging.getLogger(__name__)
-
-    logger.setLevel(logging.INFO)
-    stream_handler = logging.StreamHandler(sys.stdout)
-    log_formatter = logging.Formatter( f"%(levelname)s:     {Fore.RESET}%(message)s")
-    stream_handler.setFormatter(log_formatter)
-    logger.addHandler(stream_handler)
-    logger.info(f"API version: {CAMERA_API_VERSION}")
-    
+async def lifespan(app: FastAPI):          
     # Prepare Database
     DatabaseManager.check_connections()
     yield
@@ -376,12 +365,5 @@ if __name__ == "__main__":
     if not os.path.exists(DB_FILE):
         with open(DB_FILE, "w") as f:
             json.dump([], f)
-
-    log_config = uvicorn.config.LOGGING_CONFIG
     
-    log_config["formatters"]["access"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
-    #log_config["formatters"]["default"]["fmt"] = f"{Fore.GREEN} %(levelname)s:  {Fore.RESET}%(message)s"
-    log_config["formatters"]["default"]["fmt"] = "%(levelname)s:     %(client_addr)s - %(message)s"
-    log_config["handlers"]["default"]["formatter"] = "default"
-    
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=log_config)
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=logging_config)
