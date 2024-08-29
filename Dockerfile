@@ -3,7 +3,6 @@ FROM python:3.11-slim-bullseye AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg\
     build-essential \
     cmake \
     gcc \
@@ -23,6 +22,13 @@ FROM python:3.11-slim-bullseye
 # Set the working directory
 WORKDIR /app
 
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /root/.local /root/.local
 
@@ -31,12 +37,6 @@ COPY . .
 
 # Make sure scripts in .local are usable:
 ENV PATH=/root/.local/bin:$PATH
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Expose the port the app runs on
 EXPOSE 8000
