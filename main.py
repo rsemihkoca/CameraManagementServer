@@ -17,7 +17,6 @@ from enum import Enum
 from colorama import init, Fore, Style
 from contextlib import asynccontextmanager
 from log_config import setup_logging, logging_config
-from fastapi.middleware.cors import CORSMiddleware
 
 import sys
 
@@ -41,15 +40,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
-# Add CORSMiddleware to the application
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Allows the React app to access the API
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-)
 
 
 class CameraStatus(str, Enum):
@@ -322,12 +312,11 @@ async def stream_video(camera_ip: str):
                 camera.stream_video(),
                 media_type="video/mp2t",
                 headers={
-            'Content-Disposition': f'inline; filename="stream_{camera_ip}.ts"',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-            'Access-Control-Allow-Origin': 'http://localhost:3000',  # Add this line
-        }
+                    'Content-Disposition': f'inline; filename="stream_{camera_ip}.ts"',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0',
+                }
             )
         except Exception as e:
             # Log any errors that occur during streaming
