@@ -6,17 +6,23 @@ import os
 import base64
 from typing import List, Union
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from requests.auth import HTTPDigestAuth
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
 import subprocess
 from starlette.responses import StreamingResponse, JSONResponse
+import asyncio
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc.contrib.media import MediaPlayer
 from config import DB_FILE
 from enum import Enum
 from colorama import init, Fore, Style
 from contextlib import asynccontextmanager
 from log_config import setup_logging, logging_config
+from fastapi import FastAPI, HTTPException, WebSocket
+from aiortc import RTCSessionDescription
 
 import sys
 
@@ -40,7 +46,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 class CameraStatus(str, Enum):
     ACTIVE = "active"
@@ -127,6 +139,32 @@ class Camera:
                 yield data
 
         return generate()
+    
+    async def create_webrtc_offer(self):
+        pc = RTCPeerConnection()
+        
+        # Use the highest quality stream available
+        url = f"rtsp://{CAMERA_USERNAME}:{CAMERA_PASSWORD}@{self.ip}/h264/ch1/main/av_stream"
+        player = MediaPlayer(url)
+        
+        pc.addTrack(player.video)
+        pc.addTrack(player.audio)
+
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+    async def handle_webrtc_answer(self, answer: RTCSessionDescription):
+        pc = RTCPeerConnection()
+        await pc.setRemoteDescription(answer)
+        
+        @pc.on("icecandid@pc.on(\"icecandidate\")")
+        def on_icecandidate(candidate):
+            if candidate:
+                print(f"New ICE candidate: {candidate.sdp}")
+
+        return pc
 
 
     def capture_image(self) -> bytes:
@@ -323,7 +361,31 @@ async def stream_video(camera_ip: str):
             logger.error(f"Failed to stream video from {camera_ip}: {str(e)}")
             return GenericResponse(success=False, data=str(e))
 
+@app.websocket("/webrtc/{camera_ip}")
+async def webrtc_stream(websocket: WebSocket, camera_ip: str):
+    await websocket.accept()
+    
+    check_camera_ip_exists_and_active(camera_ip)
 
+    try:
+        camera = Camera(camera_ip)
+        offer = await camera.create_webrtc_offer()
+        await websocket.send_json(offer)
+
+        answer = await websocket.receive_json()
+        pc = await camera.handle_webrtc_answer(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
+
+        while True:
+            # Keep the connection alive
+            await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"WebRTC streaming error for {camera_ip}: {str(e)}")
+        await websocket.close()
+    finally:
+        # Cleanup
+        if pc:
+            await pc.close()
+            
 def check_camera_ip_exists(camera_ip: str):
     db = DatabaseManager.load_db()
     if not any(c["ip"] == camera_ip for c in db):
