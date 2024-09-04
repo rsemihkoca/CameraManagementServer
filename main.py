@@ -145,10 +145,31 @@ class Camera:
         
         # Use the highest quality stream available
         url = f"rtsp://{CAMERA_USERNAME}:{CAMERA_PASSWORD}@{self.ip}/h264/ch1/main/av_stream"
-        player = MediaPlayer(url)
         
-        pc.addTrack(player.video)
-        pc.addTrack(player.audio)
+        # Configure MediaPlayer with high-quality options
+        player = MediaPlayer(url, format='rtsp', options={
+            'rtsp_transport': 'tcp',  # Use TCP for more reliable streaming
+            'buffer_size': '10240k',  # Increase buffer size for smoother playback
+            'max_delay': '0',  # Minimize delay
+            'fflags': 'nobuffer',  # Reduce buffering
+            'flags': 'low_delay',  # Further reduce delay
+            'framedrop': '1',  # Allow frame dropping to maintain sync
+            'vstats': '1',  # Enable video statistics
+        })
+        
+        # Add video track with high-quality constraints
+        video_sender = pc.addTrack(player.video)
+        video_sender.setCodecPreferences([
+            RTCRtpCodecParameters(mimeType='video/H264', clockRate=90000, payloadType=96,
+                                  parameters={'profile-level-id': '42e01f', 'packetization-mode': '1'}),
+        ])
+
+        # Add audio track if available
+        if player.audio:
+            audio_sender = pc.addTrack(player.audio)
+            audio_sender.setCodecPreferences([
+                RTCRtpCodecParameters(mimeType='audio/opus', clockRate=48000, channels=2, payloadType=111),
+            ])
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -159,7 +180,7 @@ class Camera:
         pc = RTCPeerConnection()
         await pc.setRemoteDescription(answer)
         
-        @pc.on("icecandid@pc.on(\"icecandidate\")")
+        @pc.on("icecandidate")
         def on_icecandidate(candidate):
             if candidate:
                 print(f"New ICE candidate: {candidate.sdp}")
@@ -366,6 +387,7 @@ async def webrtc_stream(websocket: WebSocket, camera_ip: str):
     await websocket.accept()
     
     check_camera_ip_exists_and_active(camera_ip)
+    pc = None
 
     try:
         camera = Camera(camera_ip)
