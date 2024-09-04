@@ -5,7 +5,7 @@ import requests
 import os
 import base64
 from typing import List, Union
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from requests.auth import HTTPDigestAuth
@@ -15,14 +15,13 @@ import subprocess
 from starlette.responses import StreamingResponse, JSONResponse
 import asyncio
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+
 from aiortc.contrib.media import MediaPlayer
 from config import DB_FILE
 from enum import Enum
-from colorama import init, Fore, Style
 from contextlib import asynccontextmanager
 from log_config import setup_logging, logging_config
-from fastapi import FastAPI, HTTPException, WebSocket
-from aiortc import RTCSessionDescription
 
 import sys
 
@@ -159,17 +158,6 @@ class Camera:
         
         # Add video track with high-quality constraints
         video_sender = pc.addTrack(player.video)
-        video_sender.setCodecPreferences([
-            RTCRtpCodecParameters(mimeType='video/H264', clockRate=90000, payloadType=96,
-                                  parameters={'profile-level-id': '42e01f', 'packetization-mode': '1'}),
-        ])
-
-        # Add audio track if available
-        if player.audio:
-            audio_sender = pc.addTrack(player.audio)
-            audio_sender.setCodecPreferences([
-                RTCRtpCodecParameters(mimeType='audio/opus', clockRate=48000, channels=2, payloadType=111),
-            ])
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -229,6 +217,147 @@ class DatabaseManager:
 
 
 
+class WebRTCStreamer:
+    def __init__(self, camera_ip, username, password):
+        self.camera_ip = camera_ip
+        self.username = username
+        self.password = password
+        self.pc = None
+        self.ws = None
+        self.closed = False
+        self.ice_candidates = []
+
+    async def create_offer(self):
+        if self.pc:
+            await self.close_peer_connection()
+        
+        self.pc = RTCPeerConnection()
+        
+        @self.pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            logger.info(f"ICE connection state is {self.pc.iceConnectionState}")
+            if self.pc.iceConnectionState == "failed":
+                await self.close()
+
+        @self.pc.on("icegatheringstatechange")
+        async def on_icegatheringstatechange():
+            logger.info(f"ICE gathering state is {self.pc.iceGatheringState}")
+
+        @self.pc.on("icecandidate")
+        def on_icecandidate(candidate):
+            if candidate:
+                self.ice_candidates.append(candidate)
+
+        url = f"rtsp://{self.username}:{self.password}@{self.camera_ip}/h264/ch1/main/av_stream"
+        
+        player = MediaPlayer(url, format='rtsp', options={
+            'rtsp_transport': 'tcp',
+            'buffer_size': '20480k',
+            'max_delay': '0',
+            'fflags': 'nobuffer',
+            'flags': 'low_delay',
+            'framedrop': '1',
+            'vstats': '1',
+            'probesize': '10M',
+            'analyzeduration': '10M',
+            'preset': 'ultrafast',
+            'tune': 'zerolatency',
+        })
+        
+        self.pc.addTrack(player.video)
+
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+
+        return {"sdp": self.pc.localDescription.sdp, "type": self.pc.localDescription.type}
+
+    async def handle_answer(self, answer):
+        if not self.pc:
+            logger.warning("Received answer but peer connection is not initialized")
+            return
+        if self.pc.signalingState == "stable":
+            logger.warning("Peer connection is already in 'stable' state. Ignoring answer.")
+            return
+        await self.pc.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
+        
+        # Send any gathered ICE candidates after setting remote description
+        for candidate in self.ice_candidates:
+            await self.send_ice_candidate(candidate)
+        self.ice_candidates.clear()
+
+    async def add_ice_candidate(self, candidate):
+        if not self.pc:
+            logger.warning("Received ICE candidate but peer connection is not initialized")
+            return
+        if not self.pc.remoteDescription:
+            logger.warning("Received ICE candidate but remote description is not set")
+            return
+        try:
+            await self.pc.addIceCandidate(RTCIceCandidate(**candidate))
+        except Exception as e:
+            logger.error(f"Error adding ICE candidate: {str(e)}")
+
+    async def send_ice_candidate(self, candidate):
+        if self.ws and not self.closed:
+            await self.ws.send_json({
+                "type": "candidate",
+                "data": {
+                    "candidate": candidate.candidate,
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex
+                }
+            })
+
+    async def close_peer_connection(self):
+        if self.pc:
+            await self.pc.close()
+            self.pc = None
+
+    async def close(self):
+        self.closed = True
+        await self.close_peer_connection()
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
+
+async def webrtc_stream(websocket: WebSocket, camera_ip: str, username: str, password: str):
+    await websocket.accept()
+    
+    streamer = WebRTCStreamer(camera_ip, username, password)
+    streamer.ws = websocket
+
+    try:
+        offer = await streamer.create_offer()
+        await websocket.send_json({"type": "offer", "data": offer})
+
+        while not streamer.closed:
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
+                if message["type"] == "answer":
+                    await streamer.handle_answer(message["data"])
+                elif message["type"] == "candidate":
+                    await streamer.add_ice_candidate(message["data"])
+                elif message["type"] == "close":
+                    break
+            except asyncio.TimeoutError:
+                if streamer.pc and streamer.pc.iceConnectionState == "failed":
+                    logger.warning("ICE connection failed. Closing connection.")
+                    break
+                continue
+            except Exception as e:
+                logger.error(f"Error handling WebSocket message: {str(e)}")
+                break
+
+    except Exception as e:
+        logger.error(f"WebRTC streaming error for {camera_ip}: {str(e)}")
+    finally:
+        await streamer.close()
+
+# In your FastAPI app
+@app.websocket("/webrtc/{camera_ip}")
+async def webrtc_endpoint(websocket: WebSocket, camera_ip: str):
+    await webrtc_stream(websocket, camera_ip, CAMERA_USERNAME, CAMERA_PASSWORD)
+    
 @app.get("/", response_model=GenericResponse)
 async def root():
     return GenericResponse(success=True, data="Welcome to the IP Camera API")
@@ -382,31 +511,6 @@ async def stream_video(camera_ip: str):
             logger.error(f"Failed to stream video from {camera_ip}: {str(e)}")
             return GenericResponse(success=False, data=str(e))
 
-@app.websocket("/webrtc/{camera_ip}")
-async def webrtc_stream(websocket: WebSocket, camera_ip: str):
-    await websocket.accept()
-    
-    check_camera_ip_exists_and_active(camera_ip)
-    pc = None
-
-    try:
-        camera = Camera(camera_ip)
-        offer = await camera.create_webrtc_offer()
-        await websocket.send_json(offer)
-
-        answer = await websocket.receive_json()
-        pc = await camera.handle_webrtc_answer(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
-
-        while True:
-            # Keep the connection alive
-            await asyncio.sleep(1)
-    except Exception as e:
-        logger.error(f"WebRTC streaming error for {camera_ip}: {str(e)}")
-        await websocket.close()
-    finally:
-        # Cleanup
-        if pc:
-            await pc.close()
             
 def check_camera_ip_exists(camera_ip: str):
     db = DatabaseManager.load_db()
